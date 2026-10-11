@@ -1,46 +1,53 @@
-name: Bot Cycle 6
+name:  Auto Cycle
 
 on:
   schedule:
+    # كل ساعة؛ يتم التحقق من توقيت مصر داخل الخطوات
     - cron: "0 * * * *"
+
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: bot-cycle-6
+  group: telegram-bot-cycle
   cancel-in-progress: false
 
 jobs:
-  cycle:
+  run-bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 160
+    timeout-minutes: 135
 
     env:
       TZ: Africa/Cairo
-      WORK_HOURS: "09 10 21 22"
 
     steps:
       - name: Check Egypt Time
+        id: schedule
         run: |
           HOUR=$(date +%H)
 
           echo "Egypt time: $(date)"
           echo "Current hour: $HOUR"
-          echo "Allowed hours: $WORK_HOURS"
 
-          case " $WORK_HOURS " in
-            *" $HOUR "*)
-              echo "Inside working hours."
-              ;;
-            *)
-              echo "Outside working hours."
-              exit 78
-              ;;
-          esac
+          # فترتان يوميًا، كل فترة ساعتان
+          WORK_HOURS="09 10 21 22"
+
+          if [[ " $WORK_HOURS " == *" $HOUR "* ]]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "Inside working hours."
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "Outside working hours."
+          fi
 
       - name: Checkout Public Repository
+        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
 
       - name: Checkout Private Repository
+        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/checkout@v4
         with:
           repository: BXF8/PX
@@ -48,9 +55,11 @@ jobs:
           path: private
 
       - name: Set up Docker Buildx
+        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker Image
+        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
           context: ./private
@@ -59,44 +68,46 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Bot
+      - name: Run Bot for Two Hours
+        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           docker run --rm \
+            --init \
             -e TZ=Africa/Cairo \
-            -e WORK_HOURS="$WORK_HOURS" \
             telegram-bot:latest \
             bash -c '
-              python main.py &
-              BOT_PID=$!
-              END=$((SECONDS + 7200))
+              set -u
 
-              cleanup() {
-                kill "$BOT_PID" 2>/dev/null || true
+              echo "Starting Telegram bot..."
+              python -u main.py &
+              BOT_PID=$!
+
+              stop_bot() {
+                echo "Stopping bot..."
+                kill -TERM "$BOT_PID" 2>/dev/null || true
+
+                for i in $(seq 1 20); do
+                  kill -0 "$BOT_PID" 2>/dev/null || break
+                  sleep 1
+                done
+
+                kill -KILL "$BOT_PID" 2>/dev/null || true
                 wait "$BOT_PID" 2>/dev/null || true
               }
 
-              trap cleanup EXIT TERM INT
+              trap stop_bot EXIT TERM INT
+
+              END=$((SECONDS + 7200))
 
               while [ "$SECONDS" -lt "$END" ]; do
-                sleep 15
-
                 if ! kill -0 "$BOT_PID" 2>/dev/null; then
                   echo "Bot stopped unexpectedly."
                   wait "$BOT_PID"
                   exit $?
                 fi
 
-                HOUR=$(date +%H)
-
-                case " $WORK_HOURS " in
-                  *" $HOUR "*)
-                    ;;
-                  *)
-                    echo "Outside working hours. Stopping bot."
-                    exit 0
-                    ;;
-                esac
+                sleep 10
               done
 
-              echo "Two-hour run completed."
+              echo "Two hours completed."
             '
