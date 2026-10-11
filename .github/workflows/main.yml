@@ -1,8 +1,7 @@
-name:  Auto Cycle
+name: Telegram Bot Auto Cycle
 
 on:
   schedule:
-    # كل ساعة؛ يتم التحقق من توقيت مصر داخل الخطوات
     - cron: "0 * * * *"
 
   workflow_dispatch:
@@ -23,91 +22,164 @@ jobs:
       TZ: Africa/Cairo
 
     steps:
+      # ==========================================
+      # 1. Check Egypt Time
+      # ==========================================
       - name: Check Egypt Time
         id: schedule
+        shell: bash
         run: |
           HOUR=$(date +%H)
 
+          echo "======================================"
           echo "Egypt time: $(date)"
           echo "Current hour: $HOUR"
+          echo "======================================"
 
-          # فترتان يوميًا، كل فترة ساعتان
+          # التشغيل التلقائي:
+          # 09:00 - 11:00 صباحًا
+          # 21:00 - 23:00 مساءً
           WORK_HOURS="09 10 21 22"
 
           if [[ " $WORK_HOURS " == *" $HOUR "* ]]; then
             echo "allowed=true" >> "$GITHUB_OUTPUT"
             echo "Inside working hours."
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+            echo "Manual run: ignoring the schedule restriction."
           else
             echo "allowed=false" >> "$GITHUB_OUTPUT"
-            echo "Outside working hours."
+            echo "Outside working hours. Skipping this run."
           fi
 
+      # ==========================================
+      # 2. Checkout Public Repository
+      # ==========================================
       - name: Checkout Public Repository
-        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.schedule.outputs.allowed == 'true'
         uses: actions/checkout@v4
 
+      # ==========================================
+      # 3. Checkout Private Repository
+      # ==========================================
       - name: Checkout Private Repository
-        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.schedule.outputs.allowed == 'true'
         uses: actions/checkout@v4
         with:
           repository: BXF8/PX
           token: ${{ secrets.GH_TOKEN }}
           path: private
 
+      # ==========================================
+      # 4. Verify Required Files
+      # ==========================================
+      - name: Verify Docker Files
+        if: steps.schedule.outputs.allowed == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          echo "Checking private repository files..."
+
+          if [[ ! -f private/Dockerfile ]]; then
+            echo "ERROR: private/Dockerfile not found."
+            exit 1
+          fi
+
+          if [[ ! -f private/start.sh ]]; then
+            echo "ERROR: private/start.sh not found."
+            exit 1
+          fi
+
+          if [[ ! -f private/main.py ]]; then
+            echo "ERROR: private/main.py not found."
+            exit 1
+          fi
+
+          if [[ ! -f private/requirements.txt ]]; then
+            echo "ERROR: private/requirements.txt not found."
+            exit 1
+          fi
+
+          echo "All required files were found."
+
+      # ==========================================
+      # 5. Set up Docker Buildx
+      # ==========================================
       - name: Set up Docker Buildx
-        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.schedule.outputs.allowed == 'true'
         uses: docker/setup-buildx-action@v3
 
+      # ==========================================
+      # 6. Build Docker Image
+      # ==========================================
       - name: Build Docker Image
-        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
-        uses: docker/build-push-action@v5
+        if: steps.schedule.outputs.allowed == 'true'
+        uses: docker/build-push-action@v6
         with:
           context: ./private
+          file: ./private/Dockerfile
           tags: telegram-bot:latest
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # ==========================================
+      # 7. Run Bot for Two Hours
+      # ==========================================
       - name: Run Bot for Two Hours
-        if: steps.schedule.outputs.allowed == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.schedule.outputs.allowed == 'true'
+        shell: bash
         run: |
-          docker run --rm \
+          set -Eeuo pipefail
+
+          CONTAINER_NAME="telegram-bot-cycle"
+
+          cleanup() {
+            echo "Stopping Telegram bot container..."
+
+            docker stop --time 20 "$CONTAINER_NAME" 2>/dev/null || true
+            docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+          }
+
+          # ضمان عدم وجود حاوية قديمة بالاسم نفسه
+          docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
+
+          echo "Starting Telegram bot..."
+
+          docker run -d \
+            --name "$CONTAINER_NAME" \
             --init \
             -e TZ=Africa/Cairo \
-            telegram-bot:latest \
-            bash -c '
-              set -u
+            telegram-bot:latest
 
-              echo "Starting Telegram bot..."
-              python -u main.py &
-              BOT_PID=$!
+          # إيقاف الحاوية عند انتهاء المهمة أو إلغائها
+          trap cleanup EXIT INT TERM
 
-              stop_bot() {
-                echo "Stopping bot..."
-                kill -TERM "$BOT_PID" 2>/dev/null || true
+          echo "Bot started successfully."
+          echo "Maximum runtime: 2 hours."
 
-                for i in $(seq 1 20); do
-                  kill -0 "$BOT_PID" 2>/dev/null || break
-                  sleep 1
-                done
+          END=$((SECONDS + 7200))
 
-                kill -KILL "$BOT_PID" 2>/dev/null || true
-                wait "$BOT_PID" 2>/dev/null || true
-              }
+          while (( SECONDS < END )); do
+            RUNNING=$(docker inspect \
+              --format '{{.State.Running}}' \
+              "$CONTAINER_NAME" 2>/dev/null || echo false)
 
-              trap stop_bot EXIT TERM INT
+            if [[ "$RUNNING" != "true" ]]; then
+              echo "ERROR: Bot container stopped unexpectedly."
+              docker logs "$CONTAINER_NAME" 2>&1 || true
+              exit 1
+            fi
 
-              END=$((SECONDS + 7200))
+            sleep 10
+          done
 
-              while [ "$SECONDS" -lt "$END" ]; do
-                if ! kill -0 "$BOT_PID" 2>/dev/null; then
-                  echo "Bot stopped unexpectedly."
-                  wait "$BOT_PID"
-                  exit $?
-                fi
+          echo "Two hours completed."
+          echo "Last container logs:"
+          docker logs --tail 100 "$CONTAINER_NAME" 2>&1 || true
 
-                sleep 10
-              done
+          cleanup
+          trap - EXIT INT TERM
 
-              echo "Two hours completed."
-            '
+          echo "Bot stopped successfully."
