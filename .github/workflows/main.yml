@@ -1,9 +1,8 @@
-name: Telegram Bot Auto Cycle
+name: Auto Cycle
 
 on:
   schedule:
     - cron: "0 * * * *"
-
   workflow_dispatch:
 
 permissions:
@@ -22,23 +21,15 @@ jobs:
       TZ: Africa/Cairo
 
     steps:
-      # ==========================================
-      # 1. Check Egypt Time
-      # ==========================================
       - name: Check Egypt Time
         id: schedule
         shell: bash
         run: |
           HOUR=$(date +%H)
 
-          echo "======================================"
           echo "Egypt time: $(date)"
           echo "Current hour: $HOUR"
-          echo "======================================"
 
-          # التشغيل التلقائي:
-          # 09:00 - 11:00 صباحًا
-          # 21:00 - 23:00 مساءً
           WORK_HOURS="09 10 21 22"
 
           if [[ " $WORK_HOURS " == *" $HOUR "* ]]; then
@@ -46,22 +37,16 @@ jobs:
             echo "Inside working hours."
           elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             echo "allowed=true" >> "$GITHUB_OUTPUT"
-            echo "Manual run: ignoring the schedule restriction."
+            echo "Manual start enabled."
           else
             echo "allowed=false" >> "$GITHUB_OUTPUT"
-            echo "Outside working hours. Skipping this run."
+            echo "Outside working hours."
           fi
 
-      # ==========================================
-      # 2. Checkout Public Repository
-      # ==========================================
       - name: Checkout Public Repository
         if: steps.schedule.outputs.allowed == 'true'
         uses: actions/checkout@v4
 
-      # ==========================================
-      # 3. Checkout Private Repository
-      # ==========================================
       - name: Checkout Private Repository
         if: steps.schedule.outputs.allowed == 'true'
         uses: actions/checkout@v4
@@ -70,49 +55,28 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           path: private
 
-      # ==========================================
-      # 4. Verify Required Files
-      # ==========================================
-      - name: Verify Docker Files
+      - name: Verify Files
         if: steps.schedule.outputs.allowed == 'true'
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set -e
 
-          echo "Checking private repository files..."
-
-          if [[ ! -f private/Dockerfile ]]; then
-            echo "ERROR: private/Dockerfile not found."
+          test -f private/Dockerfile || {
+            echo "Dockerfile not found"
             exit 1
-          fi
+          }
 
-          if [[ ! -f private/start.sh ]]; then
-            echo "ERROR: private/start.sh not found."
+          test -f private/start.sh || {
+            echo "start.sh not found"
             exit 1
-          fi
+          }
 
-          if [[ ! -f private/main.py ]]; then
-            echo "ERROR: private/main.py not found."
-            exit 1
-          fi
+          echo "Required files found."
 
-          if [[ ! -f private/requirements.txt ]]; then
-            echo "ERROR: private/requirements.txt not found."
-            exit 1
-          fi
-
-          echo "All required files were found."
-
-      # ==========================================
-      # 5. Set up Docker Buildx
-      # ==========================================
       - name: Set up Docker Buildx
         if: steps.schedule.outputs.allowed == 'true'
         uses: docker/setup-buildx-action@v3
 
-      # ==========================================
-      # 6. Build Docker Image
-      # ==========================================
       - name: Build Docker Image
         if: steps.schedule.outputs.allowed == 'true'
         uses: docker/build-push-action@v6
@@ -124,10 +88,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # ==========================================
-      # 7. Run Bot for Two Hours
-      # ==========================================
-      - name: Run Bot for Two Hours
+      - name: Run start.sh for Two Hours
         if: steps.schedule.outputs.allowed == 'true'
         shell: bash
         run: |
@@ -136,16 +97,14 @@ jobs:
           CONTAINER_NAME="telegram-bot-cycle"
 
           cleanup() {
-            echo "Stopping Telegram bot container..."
-
+            echo "Stopping container..."
             docker stop --time 20 "$CONTAINER_NAME" 2>/dev/null || true
             docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
           }
 
-          # ضمان عدم وجود حاوية قديمة بالاسم نفسه
           docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
-          echo "Starting Telegram bot..."
+          echo "Starting start.sh..."
 
           docker run -d \
             --name "$CONTAINER_NAME" \
@@ -153,10 +112,9 @@ jobs:
             -e TZ=Africa/Cairo \
             telegram-bot:latest
 
-          # إيقاف الحاوية عند انتهاء المهمة أو إلغائها
           trap cleanup EXIT INT TERM
 
-          echo "Bot started successfully."
+          echo "start.sh is running."
           echo "Maximum runtime: 2 hours."
 
           END=$((SECONDS + 7200))
@@ -167,7 +125,7 @@ jobs:
               "$CONTAINER_NAME" 2>/dev/null || echo false)
 
             if [[ "$RUNNING" != "true" ]]; then
-              echo "ERROR: Bot container stopped unexpectedly."
+              echo "Container stopped unexpectedly."
               docker logs "$CONTAINER_NAME" 2>&1 || true
               exit 1
             fi
@@ -176,10 +134,9 @@ jobs:
           done
 
           echo "Two hours completed."
-          echo "Last container logs:"
           docker logs --tail 100 "$CONTAINER_NAME" 2>&1 || true
 
           cleanup
           trap - EXIT INT TERM
 
-          echo "Bot stopped successfully."
+          echo "Container stopped successfully."
