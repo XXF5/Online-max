@@ -1,0 +1,84 @@
+name: Bot Cycle 6
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: bot-cycle-6
+  cancel-in-progress: false
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 160
+
+    steps:
+      - name: Check Egypt Time
+        run: |
+          export TZ=Africa/Cairo
+          HOUR=$(date +%H)
+          WORK_HOURS="09 10 21 22"
+
+          echo "Egypt time: $(date)"
+
+          if [[ ! " $WORK_HOURS " =~ " $HOUR " ]]; then
+            echo "Outside working hours."
+            exit 78
+          fi
+
+      - name: Checkout Public Repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Private Repository
+        uses: actions/checkout@v4
+        with:
+          repository: BXF8/PX
+          token: ${{ secrets.GH_TOKEN }}
+          path: private
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./private
+          tags: telegram-bot:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Bot
+        run: |
+          docker run --rm \
+            -e TZ=Africa/Cairo \
+            telegram-bot:latest \
+            bash -c '
+              WORK_HOURS=" 09 10 21 22 "
+              python main.py &
+              BOT_PID=$!
+              END=$((SECONDS + 7200))
+
+              while [ $SECONDS -lt $END ]; do
+                sleep 15
+
+                if ! kill -0 "$BOT_PID" 2>/dev/null; then
+                  echo "Bot stopped unexpectedly."
+                  exit 1
+                fi
+
+                HOUR=$(date +%H)
+
+                if [[ ! "$WORK_HOURS" =~ " $HOUR " ]]; then
+                  echo "Outside working hours. Stopping bot."
+                  kill "$BOT_PID" 2>/dev/null || true
+                  wait "$BOT_PID" 2>/dev/null || true
+                  exit 0
+                fi
+              done
+
+              kill "$BOT_PID" 2>/dev/null || true
+              wait "$BOT_PID" 2>/dev/null || true
+            '
