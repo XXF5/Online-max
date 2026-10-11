@@ -1,4 +1,4 @@
-name: Bot Cycle 1
+name: Bot Cycle 6
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: bot-cycle-1
+  group: bot-cycle-6
   cancel-in-progress: false
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
         run: |
           export TZ=Africa/Cairo
           HOUR=$(date +%H)
-          WORK_HOURS="11 12 23 00"
+          WORK_HOURS="09 10 21 22"
 
           echo "Egypt time: $(date)"
 
@@ -34,7 +34,7 @@ jobs:
       - name: Checkout Private Repository
         uses: actions/checkout@v4
         with:
-          repository: XXB4/RX
+          repository: BXF8/PX
           token: ${{ secrets.GH_TOKEN }}
           path: private
 
@@ -56,7 +56,7 @@ jobs:
             -e TZ=Africa/Cairo \
             telegram-bot:latest \
             bash -c '
-              WORK_HOURS=" 11 12 23 00 "
+              WORK_HOURS=" 09 10 21 22 "
               python main.py &
               BOT_PID=$!
               END=$((SECONDS + 7200))
